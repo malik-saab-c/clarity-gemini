@@ -1,0 +1,19 @@
+{
+  "name": "clarity-gemini-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Clarity — Autonomous Standalone Gemini AI Agent Workspace",
+  "scripts": {
+    "build": "node -e 'process.exit(0)'",
+    "start": "node server.js",
+    "test": "node --test",
+    "lint": "node --check server.js test/server.test.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}

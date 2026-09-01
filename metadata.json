@@ -1,0 +1,8 @@
+{
+  "name": "Clarity — Agent Workspace",
+  "description": "Autonomous AI agent workspace powered by Gemini with real tools, file workspace, and streaming execution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
