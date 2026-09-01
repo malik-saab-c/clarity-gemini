@@ -32,8 +32,8 @@ Open **http://localhost:3000** in your browser.
 
 ### On Android Mobile (Termux):
 ```bash
-pkg update && pkg install nodejs python git -y
-git clone <repo-url> && cd clarity
+pkg update -y && pkg upgrade -y && pkg install nodejs python git -y
+git clone https://github.com/malik-saab-c/clarity-gemini.git && cd clarity-gemini
 npm install
 node server.js
 ```
