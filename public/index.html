@@ -51,6 +51,7 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
 .app {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
   position: relative;
@@ -61,6 +62,7 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
   width: 270px;
   flex-shrink: 0;
   height: 100vh;
+  height: 100dvh;
   background: #fbfcfd;
   border-right: 1px solid var(--line);
   display: flex;
@@ -593,6 +595,47 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
 .message-row.user .message-content-wrap {
   align-items: flex-end;
   max-width: 640px;
+}
+
+/* Animated Typing & Thinking Indicator */
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 2px;
+  margin-bottom: 6px;
+  animation: typing-pulse 1.8s infinite ease-in-out;
+}
+.typing-dots {
+  display: flex;
+  align-items: center;
+  gap: 4.5px;
+}
+.typing-dots .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--green);
+  animation: dot-bounce 1.4s infinite ease-in-out both;
+}
+.typing-dots .dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-dots .dot:nth-child(2) { animation-delay: -0.16s; }
+.typing-dots .dot:nth-child(3) { animation-delay: 0s; }
+
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.35; }
+  40% { transform: scale(1.2); opacity: 1; background-color: var(--green-dark); }
+}
+@keyframes typing-pulse {
+  0%, 100% { border-color: var(--line); box-shadow: 0 1px 3px rgba(0,0,0,0.03); }
+  50% { border-color: rgba(15, 139, 103, 0.45); box-shadow: 0 2px 10px rgba(15, 139, 103, 0.15); }
 }
 .bubble {
   padding: 12px 16px;
@@ -1248,6 +1291,10 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
 
 /* Responsive Overrides */
 @media (max-width: 768px) {
+  .app, .sidebar, .main-canvas {
+    height: 100vh;
+    height: 100dvh;
+  }
   .sidebar {
     position: fixed;
     top: 0;
@@ -1260,9 +1307,24 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
     box-shadow: 8px 0 32px rgba(0,0,0,0.22);
     z-index: 50;
     overflow: hidden;
+    pointer-events: none;
+    visibility: hidden;
   }
   .sidebar.open-mobile {
     transform: translateX(0) !important;
+    pointer-events: auto;
+    visibility: visible;
+  }
+  button, input, select, textarea {
+    touch-action: manipulation;
+  }
+  input, select, textarea {
+    font-size: 16px !important; /* Prevents auto-zoom on iOS mobile browsers */
+  }
+  .topbar-btn {
+    min-width: 38px;
+    min-height: 38px;
+    touch-action: manipulation;
   }
   .topbar {
     padding: 0 10px;
@@ -1296,13 +1358,14 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
   }
   .topbar-action-btn {
     padding: 5px 8px;
-    min-width: 32px;
-    height: 32px;
+    min-width: 34px;
+    height: 34px;
     justify-content: center;
-    font-size: 12px;
+    font-size: 13px;
+    touch-action: manipulation;
   }
   .topbar-btn-icon {
-    font-size: 13px;
+    font-size: 14px;
   }
   .pill-counter {
     padding: 1px 4px;
@@ -1311,6 +1374,11 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
   }
   .chat-scroll-area { padding: 14px 10px 10px; }
   .composer-area { padding: 0 10px 12px; }
+  .send-btn {
+    min-width: 38px;
+    min-height: 38px;
+    touch-action: manipulation;
+  }
   .hero-title { font-size: 22px; }
   .starter-grid { grid-template-columns: 1fr; }
 }
@@ -1911,6 +1979,12 @@ function isTaskCompletionText(txt) {
          /(?:completed|finished) (?:your|all) (?:task|request|deliverables)/i.test(txt);
 }
 
+function removeTypingIndicator(contentWrap) {
+  if (!contentWrap) return;
+  const ind = contentWrap.querySelector('.typing-indicator');
+  if (ind) ind.remove();
+}
+
 function appendMessageElement(m) {
   const container = $('messagesList');
   $('welcomeHero').style.display = 'none';
@@ -1998,6 +2072,21 @@ function appendMessageElement(m) {
             <button class="btn-reject" onclick="handleInlineDecision(this, false, null, '${escapeHtml(m.approval.approvalId || '')}')">✕ Reject</button>
           </div>
         ` : `<div style="font-weight:600;font-size:12.5px;color:#92400e">${escapeHtml(m.approval.decisionText || 'Decided')}</div>`}
+      </div>
+    `;
+  }
+
+  // If assistant message has no content yet while streaming, show attractive animated loading indicator!
+  const hasContent = Boolean(m.text && cleanChatText(m.text)) || Boolean(m.thinking) || toolsToRender.length > 0 || Boolean(m.approval);
+  if (m.role !== 'user' && !hasContent && (m.streaming || isGenerating)) {
+    innerHtml += `
+      <div class="typing-indicator" id="typing-indicator">
+        <div class="typing-dots">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+        <span>Clarity is thinking & processing…</span>
       </div>
     `;
   }
@@ -2300,11 +2389,22 @@ async function submitChat(promptText, options = {}) {
           .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
           .map(m => {
             let content = cleanChatText(m.text || '');
+            let parts = [];
 
             const toolLogs = [];
             if (Array.isArray(m.toolsExecuted) && m.toolsExecuted.length > 0) {
               for (const t of m.toolsExecuted) {
-                toolLogs.push(`[Tool Executed: ${t.tool}\nCommand/Input: ${typeof t.args === 'string' ? t.args : JSON.stringify(t.args)}\nExecution Result: ${typeof t.result === 'string' ? t.result : JSON.stringify(t.result)}]`);
+                // Attach image inline if the tool returned base64 (e.g., reading an image file)
+                if (t.result && typeof t.result === 'object' && t.result.image && t.result.base64) {
+                  parts.push({
+                    inlineData: { mimeType: 'image/png', data: t.result.base64 }
+                  });
+                  const logResult = { ...t.result };
+                  delete logResult.base64; // Don't bloat the text context
+                  toolLogs.push(`[Tool Executed: ${t.tool}\nCommand/Input: ${typeof t.args === 'string' ? t.args : JSON.stringify(t.args)}\nExecution Result: ${JSON.stringify(logResult)} (Image passed inline)]`);
+                } else {
+                  toolLogs.push(`[Tool Executed: ${t.tool}\nCommand/Input: ${typeof t.args === 'string' ? t.args : JSON.stringify(t.args)}\nExecution Result: ${typeof t.result === 'string' ? t.result : JSON.stringify(t.result)}]`);
+                }
               }
             } else if (m.tool) {
               toolLogs.push(`[Tool Executed: ${m.tool}\nCommand/Input: ${typeof m.toolArgs === 'string' ? m.toolArgs : JSON.stringify(m.toolArgs)}\nExecution Result: ${typeof m.toolResult === 'string' ? m.toolResult : JSON.stringify(m.toolResult)}]`);
@@ -2319,9 +2419,13 @@ async function submitChat(promptText, options = {}) {
               content = content ? `${content}\n\n${appInfo}` : appInfo;
             }
 
-            return { role: m.role, content };
+            if (content) {
+              parts.unshift({ text: content });
+            }
+
+            return { role: m.role, parts, content };
           })
-          .filter(m => m.content && m.content.trim().length > 0)
+          .filter(m => (m.content && m.content.trim().length > 0) || (m.parts && m.parts.length > 0))
       : [];
 
     const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth <= 768;
@@ -2377,6 +2481,7 @@ async function submitChat(promptText, options = {}) {
 
           // Error event
           else if (ev.error) {
+            removeTypingIndicator(contentWrap);
             assistantMsg.text += `\n⚠ ${ev.error}`;
             const cleanText = cleanChatText(assistantMsg.text);
             if (!bubbleEl) {
@@ -2390,6 +2495,7 @@ async function submitChat(promptText, options = {}) {
 
           // Reasoning / Thinking
           else if (ev.reasoning_content) {
+            removeTypingIndicator(contentWrap);
             assistantMsg.thinking += ev.reasoning_content;
             let details = row.querySelector('.thinking-block');
             if (!details) {
@@ -2406,6 +2512,7 @@ async function submitChat(promptText, options = {}) {
 
           // Delta text
           else if (ev.delta) {
+            removeTypingIndicator(contentWrap);
             let chunk = ev.delta;
             if (chunk.includes('<think>') || chunk.includes('</think>')) {
               chunk = chunk.replace(/<\/?think>/gi, '');
@@ -2442,6 +2549,7 @@ async function submitChat(promptText, options = {}) {
 
           // Final response text
           else if (ev.final_text) {
+            removeTypingIndicator(contentWrap);
             let finalClean = ev.final_text;
             if (finalClean.includes('<think>')) {
               const m = finalClean.match(/<think>([\s\S]*?)<\/think>/i);
@@ -2478,6 +2586,7 @@ async function submitChat(promptText, options = {}) {
 
           // Automatic Tool Call started (Real-time progress notification)
           else if (ev.event === 'tool.intent' || ev.event === 'tool.call') {
+            removeTypingIndicator(contentWrap);
             const toolId = ev.callId || streamToolCardMap[ev.tool] || `sse-${ev.tool}-${Date.now()}`;
             streamToolCardMap[ev.tool] = toolId;
             addTrace('Tool Invoked', `${ev.tool}: ${JSON.stringify(ev.args || '')}`, '⚙');
@@ -2499,6 +2608,7 @@ async function submitChat(promptText, options = {}) {
 
           // Tool Result (Finished execution)
           else if (ev.event === 'tool.result') {
+            removeTypingIndicator(contentWrap);
             const toolId = ev.callId || streamToolCardMap[ev.tool] || `sse-${ev.tool}-${Date.now()}`;
             streamToolCardMap[ev.tool] = toolId;
             addTrace('Tool Completed', `${ev.tool} finished`, '✓');
@@ -2519,6 +2629,7 @@ async function submitChat(promptText, options = {}) {
 
           // Sensitive Action Approval Requested (1-time human gate)
           else if (ev.event === 'approval.requested') {
+            removeTypingIndicator(contentWrap);
             addTrace('Approval Gate', ev.reason || 'Approval required', '🛡️');
             assistantMsg.approval = { reason: ev.reason, approvalId: ev.approvalId, decided: false };
             let card = (ev.approvalId ? contentWrap.querySelector(`.approval-card[data-approval-id="${escapeHtml(ev.approvalId)}"]`) : null) || contentWrap.querySelector('.approval-card');
@@ -2817,13 +2928,12 @@ function handleSidebarToggle(e) {
 const menuBtn = $('mobileMenuBtn');
 if (menuBtn) {
   menuBtn.onclick = handleSidebarToggle;
-  menuBtn.addEventListener('touchend', handleSidebarToggle, { passive: false });
 }
 
 const sbToggle = $('sidebarToggle');
 if (sbToggle) {
   sbToggle.onclick = (e) => {
-    e.stopPropagation();
+    if (e) e.stopPropagation();
     if (window.innerWidth <= 768) {
       closeMobileSidebar();
     } else {
@@ -2834,11 +2944,10 @@ if (sbToggle) {
 
 const sbBackdrop = $('sidebarBackdrop');
 if (sbBackdrop) {
-  sbBackdrop.onclick = closeMobileSidebar;
-  sbBackdrop.addEventListener('touchend', (e) => {
-    e.preventDefault();
+  sbBackdrop.onclick = (e) => {
+    if (e) e.preventDefault();
     closeMobileSidebar();
-  }, { passive: false });
+  };
 }
 
 // Settings Modal

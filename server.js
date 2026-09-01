@@ -859,22 +859,26 @@ function buildGeminiContents(history, currentMessage) {
     for (const h of history) {
       if (!h) continue;
       const role = (h.role === 'assistant' || h.role === 'model') ? 'model' : 'user';
-      const text = String(h.content || h.text || '').trim();
-      if (text) {
-        rawItems.push({ role, text });
+      if (Array.isArray(h.parts) && h.parts.length > 0) {
+        rawItems.push({ role, parts: h.parts });
+      } else {
+        const text = String(h.content || h.text || '').trim();
+        if (text) {
+          rawItems.push({ role, parts: [{ text }] });
+        }
       }
     }
   }
   if (currentMessage && String(currentMessage).trim()) {
-    rawItems.push({ role: 'user', text: String(currentMessage).trim() });
+    rawItems.push({ role: 'user', parts: [{ text: String(currentMessage).trim() }] });
   }
 
   const contents = [];
   for (const item of rawItems) {
     if (contents.length > 0 && contents[contents.length - 1].role === item.role) {
-      contents[contents.length - 1].parts[0].text += '\n\n' + item.text;
+      contents[contents.length - 1].parts.push(...item.parts);
     } else {
-      contents.push({ role: item.role, parts: [{ text: item.text }] });
+      contents.push({ role: item.role, parts: [...item.parts] });
     }
   }
   if (contents.length > 0 && contents[0].role !== 'user') {
@@ -917,7 +921,7 @@ async function detectAndExecuteTools(prompt, res) {
       const resp = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0 (Clarity Gemini)' }, signal: AbortSignal.timeout(8000) });
       const rawHtml = await resp.text();
       const clean = rawHtml.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
-      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'fetch_url', status: resp.status, length: clean.length })}\n\n`);
+      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'fetch_url', status: resp.status, length: clean.length, result: clean.slice(0, 500) })}\n\n`);
       return { handled: false, context: `[Tool Execution: fetch_url("${url}") HTTP ${resp.status}, content snippet: "${clean.slice(0, 500)}..."]` };
     } catch (e) {
       res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'fetch_url', error: e.message })}\n\n`);
@@ -932,8 +936,8 @@ async function detectAndExecuteTools(prompt, res) {
       res.write(`data: ${JSON.stringify({ event: 'tool.intent', callId, tool: 'list_files', message: 'Scanning workspace files…', args: {} })}\n\n`);
       res.write(`data: ${JSON.stringify({ event: 'tool.call', callId, tool: 'list_files', args: {} })}\n\n`);
       const files = listWorkspace();
-      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'list_files', count: files.length })}\n\n`);
       const names = files.slice(0, 15).map(f => f.name).join(', ');
+      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'list_files', count: files.length, result: names })}\n\n`);
       return { handled: false, context: `[Tool Execution: list_files() found ${files.length} files: ${names}]` };
     } catch (e) {
       res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'list_files', error: e.message })}\n\n`);
@@ -951,8 +955,18 @@ async function detectAndExecuteTools(prompt, res) {
         res.write(`data: ${JSON.stringify({ delta: `\n\n*Progress:* Reading content of workspace file \`${rel}\`...\n` })}\n\n`);
         res.write(`data: ${JSON.stringify({ event: 'tool.intent', callId, tool: 'read_file', message: `Reading file: ${rel}`, args: { path: rel } })}\n\n`);
         res.write(`data: ${JSON.stringify({ event: 'tool.call', callId, tool: 'read_file', args: { path: rel } })}\n\n`);
-        const content = fs.readFileSync(target, 'utf8').slice(0, 2500);
-        res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'read_file', path: rel, size: content.length })}\n\n`);
+        const ext = path.extname(target).toLowerCase();
+        const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(ext);
+        let content, resultPayload;
+        if (isImage) {
+           const buf = fs.readFileSync(target);
+           content = "[Image File]";
+           resultPayload = { path: rel, size: buf.length, image: true, base64: buf.length < 250000 ? buf.toString('base64') : undefined };
+        } else {
+           content = fs.readFileSync(target, 'utf8').slice(0, 2500);
+           resultPayload = { path: rel, size: content.length, result: content };
+        }
+        res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'read_file', ...resultPayload })}\n\n`);
         return { handled: false, context: `[Tool Execution: read_file("${rel}") content:\n${content}]` };
       }
     } catch {}
@@ -976,31 +990,34 @@ async function detectAndExecuteTools(prompt, res) {
           resolve((stdout || '') + (stderr ? '\n' + stderr : ''));
         });
       });
-      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'sandbox_run', output: out.slice(0, 500) })}\n\n`);
+      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'sandbox_run', output: out.slice(0, 500), result: out.slice(0, 500) })}\n\n`);
       return { handled: false, context: `[Tool Execution: sandbox_run("${fullCmd}") output:\n${out.slice(0, 1000)}]` };
     } catch (e) {
       res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'sandbox_run', error: e.message })}\n\n`);
     }
   }
 
-  // 6. Write file (AUTOMATIC & UNRESTRICTED - NO APPROVAL REQUIRED)
-  const writeMatch = p.match(/(?:create|write|save|make|add)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:name[d]?\s+|called\s+)?([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)(?:\s+(?:containing|with(?:\s+content)?|content:)\s*([\s\S]*))?/i);
+  // 6. Write file (AUTOMATIC & UNRESTRICTED - ONLY execute when explicit content is supplied, otherwise delegate to Gemini for complete code generation)
+  const writeMatch = p.match(/(?:create|write|save|make|add)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:name[d]?\s+|called\s+)?([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)(?:\s+(?:containing|with(?:\s+content)?|content:)\s*([\s\S]+))$/i);
   if (writeMatch) {
     const rel = writeMatch[1].trim();
     const hint = (writeMatch[2] || '').trim();
-    const content = generateContentForHint(hint, rel);
-    const callId = 'call_' + crypto.randomUUID().slice(0, 8);
-    try {
-      const target = safePath(rel);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, content);
-      res.write(`data: ${JSON.stringify({ delta: `\n\n*Progress:* Writing workspace file \`${rel}\` (${content.length} bytes)...\n` })}\n\n`);
-      res.write(`data: ${JSON.stringify({ event: 'tool.intent', callId, tool: 'file_write', message: `Creating file ${rel} (${content.length} bytes)…`, args: { path: rel } })}\n\n`);
-      res.write(`data: ${JSON.stringify({ event: 'tool.call', callId, tool: 'file_write', args: { path: rel } })}\n\n`);
-      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'file_write', path: rel, size: content.length })}\n\n`);
-      return { handled: false, context: `[Tool Execution: Created and wrote file "${rel}" (${content.length} chars) successfully]` };
-    } catch (e) {
-      res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'file_write', error: e.message })}\n\n`);
+    // Only pre-write if explicit raw content was provided in prompt (e.g., "create file notes.txt containing Hello World")
+    if (hint && !/(?:sketch|draw|design|build|app|code|html|css|javascript|page|canvas|game)/i.test(p)) {
+      const content = generateContentForHint(hint, rel);
+      const callId = 'call_' + crypto.randomUUID().slice(0, 8);
+      try {
+        const target = safePath(rel);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, content);
+        res.write(`data: ${JSON.stringify({ delta: `\n\n*Progress:* Writing workspace file \`${rel}\` (${content.length} bytes)...\n` })}\n\n`);
+        res.write(`data: ${JSON.stringify({ event: 'tool.intent', callId, tool: 'file_write', message: `Creating file ${rel} (${content.length} bytes)…`, args: { path: rel } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ event: 'tool.call', callId, tool: 'file_write', args: { path: rel } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'file_write', path: rel, size: content.length })}\n\n`);
+        return { handled: false, context: `[Tool Execution: Created and wrote file "${rel}" (${content.length} chars) successfully]` };
+      } catch (e) {
+        res.write(`data: ${JSON.stringify({ event: 'tool.result', callId, tool: 'file_write', error: e.message })}\n\n`);
+      }
     }
   }
 
@@ -1065,6 +1082,10 @@ async function streamProviderDirect(res, b) {
   const userAgent = String(b.userAgent || 'Web Browser');
 
   const system = `You are Clarity, an autonomous standalone AI assistant powered by Google Gemini AI. Direct and complete the user task from start to finish. If the task requires multiple steps, work through them sequentially without stopping prematurely. All tool operations (creating/writing files, reading files, patching files, terminal commands, web search, archiving) execute automatically without restrictions. ONLY file or content deletion requires user approval.
+
+CRITICAL MANDATES - SESSION MEMORY & DEDUPLICATION:
+1. COMPLETE SESSION MEMORY: Carefully inspect all previous conversation turns, tool logs, image outputs, and execution results before choosing any action. You have full memory of all prior messages and tool results.
+2. PREVENT DUPLICATE WORK: Do NOT re-create files, re-run shell commands, or repeat tool calls that have ALREADY been successfully completed in previous turns of this session. If a file exists or a step is done, proceed directly to the next step or conclude with [TASK_COMPLETE].
 
 CRITICAL MANDATE - PROGRESS REPORTING BEFORE TOOL USE:
 BEFORE invoking any tool or JSON tool call, you MUST first output a clear natural-language statement explaining to the user:
