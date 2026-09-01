@@ -1761,11 +1761,37 @@ function cleanChatText(text) {
     .replace(/\[Tool Executed:[\s\S]*?\]/gi, '')
     .replace(/\[Session Context Active\]/gi, '');
 
-  // Strip fenced code blocks that contain JSON tool calls: e.g. ```json {"tool": ...} ```
+  // Strip fenced code blocks that contain JSON tool calls
   clean = clean.replace(/```(?:json|javascript|js)?\s*\{\s*"?tool"?\s*:[\s\S]*?\}\s*```/gi, '');
 
-  // Strip standalone raw JSON tool calls: e.g. {"tool": "file_writer", "parameters": {...}}
-  clean = clean.replace(/\{\s*"?tool"?\s*:\s*"[a-zA-Z0-9_-]+"\s*,\s*"?parameters"?\s*:\s*\{[\s\S]*?\}\s*\}/gi, '');
+  let idx = clean.search(/\{\s*"?tool"?\s*:/);
+  while (idx !== -1) {
+    let open = 0;
+    let endIdx = -1;
+    let inString = false;
+    let escape = false;
+    for (let i = idx; i < clean.length; i++) {
+      let c = clean[i];
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (!inString) {
+        if (c === '{') open++;
+        else if (c === '}') {
+          open--;
+          if (open === 0) { endIdx = i; break; }
+        }
+      }
+    }
+    if (endIdx !== -1) {
+       clean = clean.substring(0, idx) + clean.substring(endIdx + 1);
+       idx = clean.search(/\{\s*"?tool"?\s*:/);
+    } else {
+       // Incomplete json at the end, just hide it
+       clean = clean.substring(0, idx);
+       break;
+    }
+  }
 
   return clean.trim();
 }
@@ -2694,13 +2720,48 @@ async function submitChat(promptText, options = {}) {
       bubbleEl.innerHTML = formatMarkdown(assistantMsg.text);
     }
 
-    // Check if AI model outputted an inline JSON tool call:
-    // e.g. {"tool": "execute_bash", "parameters": {"command": "ls"}}
-    const inlineToolMatch = assistantMsg.text.match(/\{\s*"tool"\s*:\s*"([a-zA-Z0-9_-]+)"\s*,\s*"parameters"\s*:\s*(\{[\s\S]*?\})\s*\}/);
-    if (inlineToolMatch && !assistantMsg.approval) {
-      const toolName = inlineToolMatch[1];
-      let toolArgs = {};
-      try { toolArgs = JSON.parse(inlineToolMatch[2]); } catch (e) { toolArgs = {}; }
+    // Check if AI model outputted an inline JSON tool call
+    let toolName = null;
+    let toolArgs = {};
+    let hasInlineTool = false;
+
+    let idx = assistantMsg.text.search(/\{\s*"tool"\s*:/);
+    if (idx !== -1 && !assistantMsg.approval) {
+      let open = 0;
+      let endIdx = -1;
+      let inString = false;
+      let escape = false;
+      for (let i = idx; i < assistantMsg.text.length; i++) {
+        let c = assistantMsg.text[i];
+        if (escape) { escape = false; continue; }
+        if (c === '\\') { escape = true; continue; }
+        if (c === '"') { inString = !inString; continue; }
+        if (!inString) {
+          if (c === '{') open++;
+          else if (c === '}') {
+            open--;
+            if (open === 0) { endIdx = i; break; }
+          }
+        }
+      }
+      if (endIdx !== -1) {
+        try {
+          const parsed = JSON.parse(assistantMsg.text.substring(idx, endIdx + 1));
+          toolName = parsed.tool;
+          toolArgs = parsed.parameters || parsed.arguments || parsed;
+          delete toolArgs.tool;
+          hasInlineTool = true;
+        } catch (e) {
+           const strictMatch = assistantMsg.text.match(/\{\s*"tool"\s*:\s*"([a-zA-Z0-9_-]+)"\s*,\s*"parameters"\s*:\s*(\{[\s\S]*?\})\s*\}/);
+           if (strictMatch) {
+             toolName = strictMatch[1];
+             try { toolArgs = JSON.parse(strictMatch[2]); hasInlineTool = true; } catch (err) {}
+           }
+        }
+      }
+    }
+
+    if (hasInlineTool && !assistantMsg.approval) {
 
       // Deduplicate: If SSE already created/handled this tool call, do not create a duplicate card!
       if (!streamToolCardMap[toolName]) {
@@ -2737,14 +2798,32 @@ async function submitChat(promptText, options = {}) {
             `;
             contentWrap.appendChild(card);
             scrollChatToBottom();
+
+            if (!currentSession) {
+              currentSession = sessions[0] || { id: activeRunId, title: 'Active Chat', messages: [], timestamp: Date.now() };
+            }
+            if (!Array.isArray(currentSession.messages)) currentSession.messages = [];
+            currentSession.messages.push(assistantMsg);
+            localStorage.setItem('claritySessions', JSON.stringify(sessions));
             return;
           }
 
-          finishToolCard(autoToolId, toolName, execData.output || execData.result || execData, !execData.ok && execData.status !== 'success');
+          let isErr = false;
+          if (execData.error) isErr = true;
+          else if (execData.exit_code !== undefined) isErr = execData.exit_code !== 0;
+          else if (execData.status || execData.ok !== undefined) isErr = !execData.ok && execData.status !== 'success';
+          finishToolCard(autoToolId, toolName, execData.output || execData.result || execData, isErr);
           assistantMsg.tool = toolName;
           assistantMsg.toolArgs = toolArgs;
           assistantMsg.toolResult = execData.output || execData.result || execData;
           refreshWorkspaceFiles();
+
+          if (!currentSession) {
+            currentSession = sessions[0] || { id: activeRunId, title: 'Active Chat', messages: [], timestamp: Date.now() };
+          }
+          if (!Array.isArray(currentSession.messages)) currentSession.messages = [];
+          currentSession.messages.push(assistantMsg);
+          localStorage.setItem('claritySessions', JSON.stringify(sessions));
 
           // Non-stop autonomous loop: feed output directly into next turn!
           const nextPrompt = `[TOOL RESULT FOR ${toolName}]:\n${typeof execData === 'string' ? execData : JSON.stringify(execData, null, 2)}\nProceed with next steps. If all tasks are 100% complete, emit [TASK_COMPLETE] and summary.`;
@@ -2785,7 +2864,7 @@ async function submitChat(promptText, options = {}) {
 
     // If autonomous follow-up loop was in progress, but not complete yet and no pending approval:
     const stepCount = Number(options.stepCount || 0);
-    if (!isDone && !assistantMsg.approval && isAutonomous && stepCount < 8) {
+    if (!isDone && !assistantMsg.approval && isAutonomous && stepCount < 30) {
       addTrace('Autonomous Loop Resumed', `Continuing execution until task is complete (step ${stepCount + 1})…`, '🔄');
       setTimeout(() => {
         submitChat('[Autonomous Continuation]: Previous step processed. Review history and proceed with remaining actions. If and only if all user requirements are 100% complete, emit [TASK_COMPLETE] and summarize.', {
