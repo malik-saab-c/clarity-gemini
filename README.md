@@ -116,7 +116,7 @@ Open **http://localhost:3000** in your browser.
 1. Click the **Settings (⚙)** icon in the navigation bar.
 2. Select your provider:
    - **Google Gemini** (Gemini 3.7 Flash, Gemini 3.1 Pro)
-   - **OpenAI** (GPT-4o, GPT-4o-mini, o3-mini, o1)
+   - **OpenAI** (GPT-4,5,6-astra, GPT-4o-mini, o3-mini, o1)
 3. Enter your API Key (`sk-...` for OpenAI or Gemini API Key).
 4. Click **Discover Models** to automatically load available models from your account, then click **Save**.
 
