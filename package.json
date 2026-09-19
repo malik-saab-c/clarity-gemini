@@ -2,7 +2,8 @@
   "name": "clarity-gemini-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "Clarity — Autonomous Standalone Gemini AI Agent Workspace",
+  "description": "Clarity — Autonomous Local AI Developer Agent & Sandboxed Runtime",
+  "license": "MIT",
   "scripts": {
     "build": "node -e 'process.exit(0)'",
     "start": "node server.js",

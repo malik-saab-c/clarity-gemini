@@ -15,9 +15,11 @@ test('makeZip produces valid zip (PK magic + central dir)', () => {
 test('safePath blocks traversal', () => { assert.throws(() => safePath('../etc/passwd'), /Invalid|escapes/); });
 test('workspace dir exists', () => { assert.ok(fs.existsSync(wsRoot)); });
 test('uploads dir exists', () => { assert.ok(fs.existsSync(path.join(wsRoot, 'uploads'))); });
-test('provider registry includes gemini provider', () => {
+test('provider registry includes gemini and openai providers', () => {
   const { providers } = require('../server.js');
-  assert.ok(providers.gemini);
+  assert.ok(providers.gemini, 'Gemini provider should exist');
+  assert.ok(providers.openai, 'OpenAI provider should exist');
+  assert.equal(providers.openai.name, 'OpenAI (ChatGPT)');
 });
 
 test('createThinkFilter cleanly parses <think> tags into reasoning and delta', () => {

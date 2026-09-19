@@ -1588,11 +1588,12 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
       <label for="selectProvider">LLM Provider</label>
       <select id="selectProvider">
         <option value="gemini">Google Gemini (Gemini 3.7 / 3.1 / 2.5)</option>
+        <option value="openai">OpenAI (ChatGPT / GPT-4o / o3-mini)</option>
       </select>
     </div>
 
     <div class="field-group" id="apiKeyWrap">
-      <label for="inputApiKey">Gemini API Key</label>
+      <label for="inputApiKey" id="labelApiKey">Gemini API Key</label>
       <div style="position:relative">
         <input id="inputApiKey" type="password" placeholder="Enter Gemini API key" style="padding-right:40px">
         <button type="button" id="btnToggleKey" style="position:absolute;right:8px;top:8px;color:var(--muted);font-size:14px">👁️</button>
@@ -1611,7 +1612,7 @@ button { cursor: pointer; border: 0; background: none; -webkit-tap-highlight-col
     </div>
 
     <div style="background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:16px 0;font-size:12.5px;color:var(--muted)">
-      <b>Gemini Engine:</b> Powered by Google Gemini AI. Reads, writes, terminal commands, and tool calls execute automatically. Only file/content deletion requires human approval.
+      <b>Dual Engine Support:</b> Select Google Gemini or OpenAI (ChatGPT). All autonomous tools (bash, python, files, browser, zip) execute identically across both providers.
     </div>
 
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
@@ -2368,8 +2369,9 @@ async function submitChat(promptText, options = {}) {
 
   const isAutonomous = Boolean(options.isAutonomousFollowUp);
   const provider = localStorage.getItem('clarityProvider') || 'gemini';
-  const apiKey = localStorage.getItem('clarityApiKey') || '';
-  const model = localStorage.getItem('clarityModel') || 'gemini-3.7-flash';
+  const apiKey = localStorage.getItem('clarityApiKey_' + provider) || localStorage.getItem('clarityApiKey') || '';
+  const defaultModel = provider === 'openai' ? 'gpt-4o' : 'gemini-3.7-flash';
+  const model = localStorage.getItem('clarityModel_' + provider) || localStorage.getItem('clarityModel') || defaultModel;
 
   if (!currentSession) {
     currentSession = sessions[0] || { id: activeRunId, title: 'Active Chat', messages: [], timestamp: Date.now() };
@@ -3039,12 +3041,32 @@ if (sbBackdrop) {
 }
 
 // Settings Modal
+function updateProviderUI(p) {
+  const isOAI = p === 'openai';
+  const labelEl = $('labelApiKey') || $('apiKeyWrap')?.querySelector('label');
+  if (labelEl) labelEl.textContent = isOAI ? 'OpenAI API Key' : 'Gemini API Key';
+  const keyInput = $('inputApiKey');
+  if (keyInput) keyInput.placeholder = isOAI ? 'sk-... (Enter OpenAI API key)' : 'Enter Gemini API key';
+
+  const savedKey = localStorage.getItem('clarityApiKey_' + p) || (localStorage.getItem('clarityProvider') === p ? localStorage.getItem('clarityApiKey') : '');
+  if (keyInput) keyInput.value = savedKey || '';
+
+  const defaultModel = isOAI ? 'gpt-4o' : 'gemini-3.7-flash';
+  const savedModel = localStorage.getItem('clarityModel_' + p) || (localStorage.getItem('clarityProvider') === p ? localStorage.getItem('clarityModel') : defaultModel);
+  $('inputModel').value = savedModel || defaultModel;
+  $('inputModel').placeholder = defaultModel;
+  $('discoverStatus').textContent = isOAI ? 'Default: gpt-4o (or gpt-4o-mini, o3-mini)' : 'Default: gemini-3.7-flash';
+}
+
 function openSettings() {
   $('settingsModal').classList.add('open');
-  $('selectProvider').value = localStorage.getItem('clarityProvider') || 'gemini';
-  $('inputApiKey').value = localStorage.getItem('clarityApiKey') || '';
-  $('inputModel').value = localStorage.getItem('clarityModel') || 'gemini-3.7-flash';
+  const p = localStorage.getItem('clarityProvider') || 'gemini';
+  $('selectProvider').value = p;
+  updateProviderUI(p);
 }
+$('selectProvider').onchange = () => {
+  updateProviderUI($('selectProvider').value);
+};
 $('btnOpenSettings').onclick = openSettings;
 $('topBtnSettings').onclick = openSettings;
 $('btnCloseSettings').onclick = () => $('settingsModal').classList.remove('open');
@@ -3054,12 +3076,15 @@ $('btnToggleKey').onclick = () => {
 };
 
 $('btnSaveSettings').onclick = () => {
-  localStorage.setItem('clarityProvider', $('selectProvider').value);
+  const p = $('selectProvider').value;
+  localStorage.setItem('clarityProvider', p);
   localStorage.setItem('clarityApiKey', $('inputApiKey').value);
+  localStorage.setItem('clarityApiKey_' + p, $('inputApiKey').value);
   localStorage.setItem('clarityModel', $('inputModel').value);
+  localStorage.setItem('clarityModel_' + p, $('inputModel').value);
   $('settingsModal').classList.remove('open');
   showToast('Connection settings saved');
-  addTrace('Settings Updated', `Provider: ${$('selectProvider').value}`, '⚙');
+  addTrace('Settings Updated', `Provider: ${p === 'openai' ? 'OpenAI' : 'Gemini'} (${$('inputModel').value})`, '⚙');
 };
 
 $('btnDiscoverModels').onclick = async () => {

@@ -440,9 +440,10 @@ function createMcpServer() {
   return server;
 }
 
-// Standalone Gemini provider definition
+// Standalone LLM provider definitions
 const providers = {
-  gemini: { name: 'Google Gemini', model: 'gemini-3.7-flash', base: 'https://generativelanguage.googleapis.com' }
+  gemini: { name: 'Google Gemini', model: 'gemini-3.7-flash', base: 'https://generativelanguage.googleapis.com' },
+  openai: { name: 'OpenAI (ChatGPT)', model: 'gpt-4o', base: 'https://api.openai.com/v1' }
 };
 
 function sanitizeModelName(model) {
@@ -593,7 +594,28 @@ async function resolveGeminiModel(key, preferred) {
   return candidates[0];
 }
 
+const OPENAI_FALLBACKS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4.5-preview', 'o3-mini', 'o1', 'gpt-4-turbo'];
+
 async function discoverModels(provider, key, baseUrl) {
+  if (provider === 'openai') {
+    if (key) {
+      try {
+        const r = await fetch('https://api.openai.com/v1/models', {
+          headers: { 'authorization': `Bearer ${key}` },
+          signal: AbortSignal.timeout(10000)
+        });
+        const d = await r.json();
+        if (r.ok && Array.isArray(d.data)) {
+          const chatModels = d.data
+            .map(m => m.id)
+            .filter(id => id.startsWith('gpt-') || id.startsWith('o1') || id.startsWith('o3'))
+            .filter(id => !id.includes('audio') && !id.includes('realtime') && !id.includes('transcription') && !id.includes('instruct'));
+          if (chatModels.length > 0) return chatModels.sort();
+        }
+      } catch {}
+    }
+    return OPENAI_FALLBACKS;
+  }
   if (key) {
     try {
       const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(key), { signal: AbortSignal.timeout(10000) });
@@ -887,6 +909,34 @@ function buildGeminiContents(history, currentMessage) {
   return contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: String(currentMessage || 'Hello') }] }];
 }
 
+// Helper to build OpenAI chat completion messages from history
+function buildOpenAIMessages(history, currentMessage, systemPrompt) {
+  const messages = [];
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
+  }
+  if (Array.isArray(history)) {
+    for (const h of history) {
+      if (!h) continue;
+      const role = (h.role === 'assistant' || h.role === 'model') ? 'assistant' : 'user';
+      let content = '';
+      if (Array.isArray(h.parts) && h.parts.length > 0) {
+        const textParts = h.parts.filter(p => p && p.text).map(p => p.text);
+        content = textParts.join('\n');
+      } else {
+        content = String(h.content || h.text || '').trim();
+      }
+      if (content) {
+        messages.push({ role, content });
+      }
+    }
+  }
+  if (currentMessage && String(currentMessage).trim()) {
+    messages.push({ role: 'user', content: String(currentMessage).trim() });
+  }
+  return messages.length > 0 ? messages : [{ role: 'user', content: String(currentMessage || 'Hello') }];
+}
+
 // Detect and execute tools autonomously
 // RULE: ONLY 'file_delete' requires human approval. All other tools execute directly without restrictions.
 async function detectAndExecuteTools(prompt, res) {
@@ -1072,16 +1122,16 @@ async function detectAndExecuteTools(prompt, res) {
   return { handled: false };
 }
 
-// Stream directly using Google Gemini AI
+// Stream directly using Google Gemini or OpenAI ChatGPT
 async function streamProviderDirect(res, b) {
-  const key = b.apiKey || process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY;
-  const requestedModel = b.model || 'gemini-3.7-flash';
-  const gemModel = await resolveGeminiModel(key, requestedModel);
+  const provider = (b.provider || '').toLowerCase();
+  const isOpenAI = provider === 'openai' || (!provider && (String(b.model).startsWith('gpt') || String(b.model).startsWith('o1') || String(b.model).startsWith('o3')));
 
   const isMobile = Boolean(b.isMobile);
   const userAgent = String(b.userAgent || 'Web Browser');
 
-  const system = `You are Clarity, an autonomous standalone AI assistant powered by Google Gemini AI. Direct and complete the user task from start to finish. If the task requires multiple steps, work through them sequentially without stopping prematurely. All tool operations (creating/writing files, reading files, patching files, terminal commands, web search, archiving) execute automatically without restrictions. ONLY file or content deletion requires user approval.
+  const engineName = isOpenAI ? 'OpenAI ChatGPT' : 'Google Gemini AI';
+  const system = `You are Clarity, an autonomous standalone AI assistant powered by ${engineName}. Direct and complete the user task from start to finish. If the task requires multiple steps, work through them sequentially without stopping prematurely. All tool operations (creating/writing files, reading files, patching files, terminal commands, web search, archiving) execute automatically without restrictions. ONLY file or content deletion requires user approval.
 
 CRITICAL MANDATE - CONVERSATIONAL PERSONA:
 You must communicate in a highly friendly, warm, and natural conversational tone. Do NOT act like a rigid, robotic agent (e.g., avoid "I am an AI..."). Speak to the user like a helpful human friend, using casual language and empathy where appropriate, while still effectively completing all technical tasks.
@@ -1125,13 +1175,59 @@ Whenever you need to call a tool, output the invocation block formatted as:
 
 The local client harness will automatically execute it, display its input command and execution output in an interactive closeable frame, and feed the result back to you. Continue working autonomously without stopping until the task is complete. When all requirements are verified complete, finish with [TASK_COMPLETE] and a clear summary.`;
 
-  // Build conversation history with full session memory
-  const contents = buildGeminiContents(b.history, b.message);
-
   const thinkFilter = createThinkFilter(
     rzn => res.write(`data: ${JSON.stringify({ reasoning_content: rzn })}\n\n`),
     delta => res.write(`data: ${JSON.stringify({ delta })}\n\n`)
   );
+
+  if (isOpenAI) {
+    const key = b.apiKey || process.env.OPENAI_API_KEY;
+    const requestedModel = b.model || 'gpt-4o';
+    const messages = buildOpenAIMessages(b.history, b.message, system);
+
+    try {
+      if (!key) {
+        throw Error('OpenAI API key is missing. Please enter your OpenAI API key (sk-...) in Connection Settings.');
+      }
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${key}`
+        },
+        body: JSON.stringify({
+          model: requestedModel,
+          messages
+        })
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        throw Error(d.error?.message || `OpenAI API request failed with status ${r.status}`);
+      }
+      const text = d.choices?.[0]?.message?.content || 'I have reviewed your request and processed the workspace task.';
+      for (const chunk of text.split(' ')) {
+        thinkFilter.processChunk(chunk + ' ');
+        await new Promise(r2 => setTimeout(r2, 12));
+      }
+      thinkFilter.flush();
+    } catch (err) {
+      const text = `I am Clarity OpenAI Assistant. ${err.message}. Your request was received: "${b.message}". You can configure your OpenAI API Key in the Settings panel anytime.`;
+      for (const chunk of text.split(' ')) {
+        thinkFilter.processChunk(chunk + ' ');
+        await new Promise(r2 => setTimeout(r2, 12));
+      }
+      thinkFilter.flush();
+    }
+    return;
+  }
+
+  // Google Gemini Provider Execution
+  const key = b.apiKey || process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY;
+  const requestedModel = b.model || 'gemini-3.7-flash';
+  const gemModel = await resolveGeminiModel(key, requestedModel);
+
+  // Build conversation history with full session memory
+  const contents = buildGeminiContents(b.history, b.message);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${gemModel}:generateContent?key=${encodeURIComponent(key || '')}`;
 
@@ -1271,7 +1367,8 @@ function createApp() {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
         try {
           const b = await body(req);
-          res.write(`data: ${JSON.stringify({ mode: 'direct', event: 'status', message: 'Clarity Standalone Gemini Engine active.' })}\n\n`);
+          const isOAI = (b.provider || '').toLowerCase() === 'openai' || (!b.provider && (String(b.model).startsWith('gpt') || String(b.model).startsWith('o1') || String(b.model).startsWith('o3')));
+          res.write(`data: ${JSON.stringify({ mode: 'direct', event: 'status', message: `Clarity Standalone ${isOAI ? 'OpenAI' : 'Gemini'} Engine active.` })}\n\n`);
 
           const toolExec = await detectAndExecuteTools(b.message, res);
           if (toolExec.handled) {
